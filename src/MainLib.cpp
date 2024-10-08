@@ -94,8 +94,21 @@ bindMaterial(xml_node& node, const std::string& material)
 }
 
 static void
-addTechnique(xml_node & source_node, int count, const char* sourceName, int stride, const std::string& fieldNames){
-    xml_node technique_uv = source_node.append_child("technique_common");
+addHeader(xml_node &colladaNode)
+{
+    xml_node assetNode = colladaNode.append_child("asset");
+    xml_node contributorNode = assetNode.append_child("contributor");
+    contributorNode.append_child("authoring_tool").text().set("Houdini");
+    contributorNode.append_child("author").text().set("Houdini User");
+    xml_node unitNode = assetNode.append_child("unit");
+    unitNode.append_attribute("meter") = 1;
+    unitNode.append_attribute("name") = "meter";
+    assetNode.append_child("up_axis").text().set("Y_UP");
+}
+
+static void
+addTechnique(xml_node & sourceNode, int count, const char* sourceName, int stride, const std::string& fieldNames){
+    xml_node technique_uv = sourceNode.append_child("technique_common");
     xml_node accessor_uv = technique_uv.append_child("accessor");
     accessor_uv.append_attribute("source") = sourceName;
     accessor_uv.append_attribute("count") = count;
@@ -122,9 +135,9 @@ addSource(xml_node& mesh, const std::string& id, const std::string& name, const 
 }
 
 static void
-addTriangleInput(xml_node& triangles_node, const std::string& semantic, const std::string& source, int offset)
+addTriangleInput(xml_node& trianglesNode, const std::string& semantic, const std::string& source, int offset)
 {
-    xml_node input = triangles_node.append_child("input");
+    xml_node input = trianglesNode.append_child("input");
     input.append_attribute("semantic") = semantic.c_str();
     input.append_attribute("source") = source.c_str();
     input.append_attribute("offset") = offset;
@@ -145,6 +158,10 @@ exportGeoData(void *data, int index, fpreal t, const PRM_Template *tplate)
     {
         filePath += ".dae";
     }
+
+    std::string filename = filePath.toStdString();
+    filename = filename.substr(filename.find_last_of('/') + 1);
+    filename = filename.substr(0, filename.find_last_of('.'));
 
     OP_Context  context(0);
     GU_DetailHandle gdHandle = sop->getCookedGeoHandle(context);
@@ -190,18 +207,18 @@ exportGeoData(void *data, int index, fpreal t, const PRM_Template *tplate)
             if (geoName != lastGeoName)
             {
                 lastGeoName = geoName;
-                geos[geoName].m_name = geoName.toStdString();
+                geos[geoName].name = geoName.toStdString();
             }
 
             GeoContainer& container = geos[geoName];
-            container.m_primOffsets.push_back(*it);
+            container.primOffsets.push_back(*it);
 
             for (GA_Size i = 0; i < prim->getVertexCount(); ++i)
             {
                 GA_Offset vtx = prim->getVertexOffset(i);
-                if (std::find(container.m_vertOffsets.begin(), container.m_vertOffsets.end(), vtx) == container.m_vertOffsets.end())
+                if (std::find(container.vertOffsets.begin(), container.vertOffsets.end(), vtx) == container.vertOffsets.end())
                 {
-                    container.m_vertOffsets.push_back(vtx);
+                    container.vertOffsets.push_back(vtx);
                 }
             }
         }
@@ -243,12 +260,33 @@ exportGeoData(void *data, int index, fpreal t, const PRM_Template *tplate)
 
     xml_document doc;
     xml_node collada = doc.append_child("COLLADA");
+    addHeader(collada);
+
+    xml_node effects = collada.append_child("library_effects");
+    xml_node effectNode = effects.append_child("effect");
+    const std::string effectName = filename + "-effect";
+    effectNode.append_attribute("id") = effectName.c_str();
+    xml_node effectTechnique = effectNode.append_child("technique");
+    effectTechnique.append_attribute("sid") = "common";
+    xml_node effectLambert = effectTechnique.append_child("lambert");
+
+    xml_node materials = collada.append_child("library_materials");
+    std::vector<std::string> addedMaterials;
+
     xml_node geoms = collada.append_child("library_geometries");
+
+    auto addMaterial = [&](const std::string& materialName) {
+        xml_node material = materials.append_child("material");
+        material.append_attribute("id") = materialName.c_str();
+        material.append_attribute("name") = materialName.c_str();
+        xml_node instanceEffect = material.append_child("instance_effect");
+        instanceEffect.append_attribute("url") = ("#" + effectName).c_str();
+    };
 
     for(auto& geo : geos)
     {
         auto& container = geo.second;
-        auto& geoName = container.m_name;
+        auto& geoName = container.name;
 
         xml_node geom = geoms.append_child("geometry");
         geom.append_attribute("id") = geoName.c_str();
@@ -260,14 +298,24 @@ exportGeoData(void *data, int index, fpreal t, const PRM_Template *tplate)
         xml_node floatArrayPos = sourcePos.append_child("float_array");
         floatArrayPos.append_attribute("id") = (geoName + "-mesh-positions-array").c_str();
 
-        std::vector<UT_Vector3> positions(container.m_vertOffsets.size());
+        std::vector<UT_Vector3> positions(container.vertOffsets.size());
         std::vector<UT_Vector2> uvs;
         std::vector<UT_Vector3> normals;
         std::vector<int> polyIndices;
 
-        for (uint i = 0; i < container.m_vertOffsets.size(); ++i)
+        if(materialAttr)
         {
-            positions[i] = gdp->getPos3(gdp->vertexPoint(container.m_vertOffsets[i]));
+            const std::string materialName = p_materialHandle->get(container.primOffsets[0]).toStdString();
+            if (std::find(addedMaterials.begin(), addedMaterials.end(), materialName) == addedMaterials.end())
+            {
+                addMaterial(materialName);
+                addedMaterials.push_back(materialName);
+            }
+        }
+
+        for (uint i = 0; i < container.vertOffsets.size(); ++i)
+        {
+            positions[i] = gdp->getPos3(gdp->vertexPoint(container.vertOffsets[i]));
         }
 
         // for (GA_Offset primOffset : container.m_primOffsets) {
@@ -279,9 +327,9 @@ exportGeoData(void *data, int index, fpreal t, const PRM_Template *tplate)
         //     }
         // }
 
-        for (int i = 0; i < container.m_primOffsets.size(); ++i)
+        for (int i = 0; i < container.primOffsets.size(); ++i)
         {
-            int vertCount = gdp->getPrimitive(container.m_primOffsets[i])->getVertexCount();
+            int vertCount = gdp->getPrimitive(container.primOffsets[i])->getVertexCount();
             for (int y = vertCount - 1; y >= 0; --y)
             {
                 int idx = i * 3 + y;
@@ -297,12 +345,12 @@ exportGeoData(void *data, int index, fpreal t, const PRM_Template *tplate)
                 int idx = i * 3 + y;
                 if (uvAttrib)
                 {
-                    const UT_Vector3 uv = p_uvHandle->get(isPointUV ? gdp->vertexPoint(container.m_vertOffsets[idx]) : container.m_vertOffsets[idx]);
+                    const UT_Vector3 uv = p_uvHandle->get(isPointUV ? gdp->vertexPoint(container.vertOffsets[idx]) : container.vertOffsets[idx]);
                     uvs.emplace_back(uv.x(), uv.y());
                 }
                 if (normalAttrib)
                 {
-                    const UT_Vector3 normal = p_normalHandle->get(isPointNormal ? gdp->vertexPoint(container.m_vertOffsets[idx]) : container.m_vertOffsets[idx]);
+                    const UT_Vector3 normal = p_normalHandle->get(isPointNormal ? gdp->vertexPoint(container.vertOffsets[idx]) : container.vertOffsets[idx]);
                     normals.push_back(normal);
                 }
             }
@@ -326,7 +374,7 @@ exportGeoData(void *data, int index, fpreal t, const PRM_Template *tplate)
 
         xml_node triangleNode = mesh.append_child("triangles");
         triangleNode.append_attribute("count") = gdp->getNumPrimitives();
-        triangleNode.append_attribute("material") = p_materialHandle ? p_materialHandle->get(container.m_primOffsets[0]).c_str() : "default";
+        triangleNode.append_attribute("material") = p_materialHandle ? p_materialHandle->get(container.primOffsets[0]).c_str() : "default";
 
         addTriangleInput(triangleNode, "VERTEX", "#" + geoName + "-mesh-vertices", 0);
         if(normalAttrib)
@@ -350,9 +398,9 @@ exportGeoData(void *data, int index, fpreal t, const PRM_Template *tplate)
     {
         xml_node geoName = createSceneNode(startNode, "geonode");
         xml_node instanceGeometry = geoName.append_child("instance_geometry");
-        instanceGeometry.append_attribute("url") = ("#" + geo.second.m_name).c_str();
-        instanceGeometry.append_attribute("name") = geo.second.m_name.c_str();
-        bindMaterial(instanceGeometry, p_materialHandle ? p_materialHandle->get(geo.second.m_primOffsets[0]).toStdString() : "default");
+        instanceGeometry.append_attribute("url") = ("#" + geo.second.name).c_str();
+        instanceGeometry.append_attribute("name") = geo.second.name.c_str();
+        bindMaterial(instanceGeometry, p_materialHandle ? p_materialHandle->get(geo.second.primOffsets[0]).toStdString() : "default");
     }
 
     xml_node scene = collada.append_child("scene");
@@ -364,7 +412,7 @@ exportGeoData(void *data, int index, fpreal t, const PRM_Template *tplate)
 }
 
 static PRM_Name
-sop_names[] = {
+sopNames[] = {
     PRM_Name("file",      	"File"),
     PRM_Name("export",      	"Export"),
 };
@@ -372,8 +420,8 @@ sop_names[] = {
 PRM_Template
 SOP_ColladaExporter::g_myTemplateList[]=
 {
-    PRM_Template(PRM_FILE, 1, &sop_names[0], 0),
-    PRM_Template(PRM_CALLBACK, 1, &sop_names[1], 0, 0, 0, exportGeoData),
+    PRM_Template(PRM_FILE, 1, &sopNames[0], 0),
+    PRM_Template(PRM_CALLBACK, 1, &sopNames[1], 0, 0, 0, exportGeoData),
     PRM_Template()
 };
 
