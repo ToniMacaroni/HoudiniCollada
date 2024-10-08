@@ -6,6 +6,7 @@
 #include <OP/OP_Operator.h>
 #include <OP/OP_OperatorTable.h>
 #include <PRM/PRM_Include.h>
+#include <UT/UT_DSOVersion.h>
 
 #include <GEO/GEO_IOTranslator.h>
 #include <UT/UT_Vector3.h>
